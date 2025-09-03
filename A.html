@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Focus Timer — Mood Tracker</title>
+  <style>
+    :root{ --bg:#0f172a; --card:#0b1220; --muted:#9ca3af; --accent:#60a5fa; --good:#22c55e; --meh:#f59e0b; --bad:#ef4444; --glass: rgba(255,255,255,0.04); }
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto;background:linear-gradient(180deg,#071026 0%,var(--bg) 60%);color:#e6eef8;display:flex;align-items:center;justify-content:center;padding:24px}
+    .app{width:min(980px,96vw);display:grid;grid-template-columns:360px 1fr;gap:22px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));border-radius:12px;padding:18px;border:1px solid rgba(255,255,255,0.04);box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+    h1{font-size:18px;margin:0 0 10px}
+    .timer{display:flex;flex-direction:column;gap:12px;align-items:center}
+    .time{font-size:48px;font-weight:600}
+    .controls{display:flex;gap:8px}
+    button{background:var(--glass);border:1px solid rgba(255,255,255,0.04);color:inherit;padding:10px 14px;border-radius:10px;cursor:pointer}
+    .primary{background:linear-gradient(180deg,var(--accent),#3b82f6);color:#031028;font-weight:700;border:none}
+    .small{padding:8px 10px;font-size:14px}
+    .settings{display:flex;gap:8px;align-items:center}
+    label{font-size:13px;color:var(--muted)}
+    .preset{display:flex;gap:6px}
+    .preset button{background:transparent;border:1px solid rgba(255,255,255,0.04);padding:6px 8px;border-radius:8px}
+    .mood-prompt{display:flex;gap:10px;justify-content:center}
+    .mood-btn{font-size:22px;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.04);cursor:pointer;background:transparent}
+    .stats{display:flex;flex-direction:column;gap:12px}
+    .list{max-height:260px;overflow:auto;padding-right:6px}
+    .entry{display:flex;justify-content:space-between;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.02);margin-bottom:8px}
+    canvas{background:linear-gradient(180deg,rgba(255,255,255,0.01),transparent);border-radius:8px}
+    .footer{font-size:13px;color:var(--muted);text-align:center;margin-top:8px}
+    @media (max-width:880px){.app{grid-template-columns:1fr;}}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="card" aria-label="Focus Timer">
+      <h1>Focus Timer — Mood Tracker</h1>
+      <div class="timer">
+        <div class="time" id="display">25:00</div>
+        <div class="controls">
+          <button id="start" class="primary">Start</button>
+          <button id="pause" class="small">Pause</button>
+          <button id="reset" class="small">Reset</button>
+        </div>
+        <div class="settings">
+          <label>Focus</label>
+          <div class="preset">
+            <button data-min="25">25</button>
+            <button data-min="45">45</button>
+            <button data-min="60">60</button>
+          </div>
+          <label style="margin-left:8px">Break</label>
+          <div class="preset">
+            <button data-min-break="5">5</button>
+            <button data-min-break="10">10</button>
+          </div>
+        </div>
+        <div class="footer">After each focus session finishes you'll be asked to log your mood — this helps connect productivity to how you feel.</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h1>Session History & Insights</h1>
+      <div style="display:flex;gap:16px;align-items:flex-start">
+        <div style="flex:1">
+          <canvas id="moodChart" width="520" height="220"></canvas>
+          <div class="footer">Mood counts and average session length per mood.</div>
+        </div>
+        <div style="width:300px">
+          <div class="stats">
+            <div style="display:flex;justify-content:space-between;align-items:center"><strong>Recent Sessions</strong><button id="clearAll" class="small">Clear</button></div>
+            <div class="list" id="list"></div>
+            <div style="display:flex;gap:6px;justify-content:space-between;align-items:center">
+              <div><label class="muted">Auto-save:</label></div>
+              <div><button id="export" class="small">Export JSON</button><button id="import" class="small">Import</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mood modal (simple) -->
+    <div id="moodModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;backdrop-filter:blur(3px)">
+      <div style="background:linear-gradient(180deg,#071026,#081227);padding:18px;border-radius:12px;border:1px solid rgba(255,255,255,0.04);min-width:320px;text-align:center">
+        <h3 style="margin:0 0 6px">How did that session feel?</h3>
+        <p style="color:var(--muted);margin:0 0 12px">Choose a mood — we'll track it with the session timestamp.</p>
+        <div class="mood-prompt">
+          <button class="mood-btn" data-mood="good">😊</button>
+          <button class="mood-btn" data-mood="meh">😐</button>
+          <button class="mood-btn" data-mood="bad">😞</button>
+        </div>
+        <div style="margin-top:12px"><button id="skipMood" class="small">Skip</button></div>
+      </div>
+    </div>
+
+    <input type="file" id="fileIn" style="display:none" accept="application/json" />
+  </main>
+
+  <script>
+    // Focus Timer + Mood Tracker — Single file
+    (function(){
+      const display = document.getElementById('display');
+      const startBtn = document.getElementById('start');
+      const pauseBtn = document.getElementById('pause');
+      const resetBtn = document.getElementById('reset');
+      const listEl = document.getElementById('list');
+      const moodModal = document.getElementById('moodModal');
+      const moodBtns = document.querySelectorAll('.mood-btn');
+      const skipMood = document.getElementById('skipMood');
+      const clearAllBtn = document.getElementById('clearAll');
+      const exportBtn = document.getElementById('export');
+      const importBtn = document.getElementById('import');
+      const fileIn = document.getElementById('fileIn');
+      const chart = document.getElementById('moodChart');
+      const ctx = chart.getContext('2d');
+
+      // Settings
+      let focusMinutes = 25;
+      let breakMinutes = 5;
+      let isRunning = false;
+      let isOnBreak = false;
+      let remaining = focusMinutes * 60; // seconds
+      let timerId = null;
+
+      // Data storage
+      const STORAGE_KEY = 'focus_mood_sessions_v1';
+      let sessions = loadSessions();
+
+      // Initialize display
+      function formatTime(s){
+        const m = Math.floor(s/60).toString().padStart(2,'0');
+        const sec = (s%60).toString().padStart(2,'0');
+        return `${m}:${sec}`;
+      }
+      function updateDisplay(){ display.textContent = formatTime(remaining); }
+
+      // Preset buttons
+      document.querySelectorAll('button[data-min]').forEach(b=>b.addEventListener('click',()=>{
+        focusMinutes = Number(b.getAttribute('data-min'));
+        if(!isRunning){ remaining = focusMinutes*60; updateDisplay(); }
+      }));
+      document.querySelectorAll('button[data-min-break]').forEach(b=>b.addEventListener('click',()=>{
+        breakMinutes = Number(b.getAttribute('data-min-break'));
+        if(!isRunning && isOnBreak){ remaining = breakMinutes*60; updateDisplay(); }
+      }));
+
+      // Timer controls
+      startBtn.addEventListener('click', ()=>{ if(!isRunning){ isRunning=true; startTick(); startBtn.textContent='Running'; startBtn.disabled=true; } });
+      pauseBtn.addEventListener('click', ()=>{ if(isRunning){ stopTick(); startBtn.textContent='Start'; startBtn.disabled=false; } });
+      resetBtn.addEventListener('click', ()=>{ stopTick(); isOnBreak=false; isRunning=false; remaining = focusMinutes*60; updateDisplay(); startBtn.textContent='Start'; startBtn.disabled=false; });
+
+      function startTick(){
+        if(timerId) clearInterval(timerId);
+        timerId = setInterval(()=>{
+          remaining--; updateDisplay();
+          if(remaining <= 0){
+            clearInterval(timerId); timerId = null; isRunning=false; startBtn.textContent='Start'; startBtn.disabled=false;
+            // session ended — if it was a focus session, prompt mood
+            if(!isOnBreak){
+              // add session record (duration, timestamp) and ask mood
+              const rec = { ts: Date.now(), minutes: focusMinutes, onBreak:false };
+              sessions.push(rec); saveSessions(); renderList(); renderChart(); showMoodModal(rec);
+              // switch to break automatically
+              isOnBreak = true; remaining = breakMinutes*60;
+            } else {
+              // ended break — just switch back to focus
+              isOnBreak = false; remaining = focusMinutes*60;
+            }
+          }
+        },1000);
+      }
+      function stopTick(){ if(timerId) clearInterval(timerId); timerId = null; isRunning=false; }
+
+      // Mood modal
+      function showMoodModal(record){ moodModal.style.display='flex'; }
+      function hideMoodModal(){ moodModal.style.display='none'; }
+      moodBtns.forEach(btn=>btn.addEventListener('click',()=>{
+        const mood = btn.getAttribute('data-mood');
+        // attach mood to most recent session without mood
+        for(let i=sessions.length-1;i>=0;i--){ if(!sessions[i].mood){ sessions[i].mood = mood; sessions[i].tsMood = Date.now(); break; } }
+        saveSessions(); renderList(); renderChart(); hideMoodModal();
+      }));
+      skipMood.addEventListener('click', ()=>{ hideMoodModal(); });
+
+      // List and rendering
+      function renderList(){
+        listEl.innerHTML = '';
+        const last = sessions.slice().reverse().slice(0,30);
+        if(last.length===0){ listEl.innerHTML = '<div style="color:var(--muted)">No sessions yet — start focusing!</div>'; return; }
+        last.forEach(s=>{
+          const d = new Date(s.ts);
+          const el = document.createElement('div'); el.className='entry';
+          const left = document.createElement('div'); left.innerHTML = `<div style="font-weight:600">${s.minutes} min</div><div style="font-size:12px;color:var(--muted)">${d.toLocaleString()}</div>`;
+          const right = document.createElement('div'); right.style.textAlign='right';
+          if(s.mood){
+            const moodMap = {good:'😊',meh:'😐',bad:'😞'}; right.innerHTML = `<div>${moodMap[s.mood]}</div><div style="font-size:12px;color:var(--muted)">${s.tsMood?new Date(s.tsMood).toLocaleTimeString():''}</div>`;
+          } else { right.innerHTML = `<div style="color:var(--muted);font-size:13px">(no mood)</div>`; }
+          el.appendChild(left); el.appendChild(right); listEl.appendChild(el);
+        });
+      }
+
+      // Storage
+      function loadSessions(){ try{ const raw = localStorage.getItem(STORAGE_KEY); return raw?JSON.parse(raw):[] }catch(e){return[]} }
+      function saveSessions(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions)); }
+
+      // Charting (simple canvas)
+      function renderChart(){
+        // tallies
+        const counts = {good:0,meh:0,bad:0};
+        const sums = {good:0,meh:0,bad:0};
+        sessions.forEach(s=>{ if(s.mood){ counts[s.mood] = (counts[s.mood]||0)+1; sums[s.mood] = (sums[s.mood]||0) + (s.minutes||0); } });
+        const moods = ['good','meh','bad'];
+        const labels = ['😊','😐','😞'];
+        // canvas clear
+        ctx.clearRect(0,0,chart.width,chart.height);
+        // compute max for scaling
+        const maxCount = Math.max(1, ...Object.values(counts));
+        // draw bars
+        const pad = 30; const w = chart.width; const h = chart.height; const availW = w - pad*2; const colW = availW / moods.length;
+        moods.forEach((m,i)=>{
+          const x = pad + i*colW + colW*0.15; const barW = colW*0.7;
+          const barH = (counts[m]/maxCount) * (h - 80);
+          const y = h - 40 - barH;
+          // color by mood
+          let color = '#60a5fa'; if(m==='good') color = '#22c55e'; if(m==='meh') color = '#f59e0b'; if(m==='bad') color = '#ef4444';
+          // draw bar
+          ctx.fillStyle = color; ctx.fillRect(x, y, barW, barH);
+          // count text
+          ctx.fillStyle = '#dff3ff'; ctx.font = '16px UI-sans-serif'; ctx.textAlign='center'; ctx.fillText(counts[m]||0, x+barW/2, y-8);
+          // label
+          ctx.fillStyle = '#9fb8cf'; ctx.font = '20px serif'; ctx.fillText(labels[i], x+barW/2, h-12);
+          // avg minutes
+          const avg = counts[m]?Math.round(sums[m]/counts[m]):0;
+          ctx.fillStyle = '#b9d8f0'; ctx.font = '12px sans-serif'; ctx.fillText(avg?avg+'m':'—', x+barW/2, h-28);
+        });
+        // title
+        ctx.fillStyle='#a7c5e6'; ctx.font='14px sans-serif'; ctx.textAlign='left'; ctx.fillText('Mood summary', 12, 18);
+      }
+
+      // Clear all
+      clearAllBtn.addEventListener('click', ()=>{
+        if(confirm('Clear all saved sessions?')){ sessions=[]; saveSessions(); renderList(); renderChart(); }
+      });
+
+      // Export / Import
+      exportBtn.addEventListener('click', ()=>{
+        const blob = new Blob([JSON.stringify(sessions, null, 2)], {type:'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = 'focus-sessions.json'; a.click(); URL.revokeObjectURL(url);
+      });
+      importBtn.addEventListener('click', ()=> fileIn.click());
+      fileIn.addEventListener('change', (e)=>{
+        const f = e.target.files[0]; if(!f) return; const reader = new FileReader(); reader.onload = ()=>{
+          try{ const parsed = JSON.parse(reader.result); if(Array.isArray(parsed)){ sessions = parsed; saveSessions(); renderList(); renderChart(); alert('Imported '+parsed.length+' sessions'); } else alert('Invalid file'); }catch(err){ alert('Invalid JSON'); }
+        }; reader.readAsText(f);
+      });
+
+      // Init
+      updateDisplay(); renderList(); renderChart();
+
+      // Small UX: let user press space to start
+      window.addEventListener('keydown',(e)=>{ if(e.code==='Space'){ e.preventDefault(); if(isRunning) pauseBtn.click(); else startBtn.click(); } });
+
+    })();
+  </script>
+</body>
+  </html>
+  
