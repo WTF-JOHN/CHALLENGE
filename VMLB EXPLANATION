@@ -1,0 +1,4 @@
+The **Virtual Lab Simulator** is a web app that lets students drag and drop circuit components like batteries, resistors, and LEDs onto a canvas.
+They can connect the parts visually to build circuits.
+A **simulate button** checks the circuit logic and shows output results.
+It helps engineering students **practice experiments online** without needing real lab equipment.
