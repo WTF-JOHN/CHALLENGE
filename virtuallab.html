@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Virtual Lab Simulator (Demo)</title>
+  <style>
+    :root{--bg:#f6f8fb;--panel:#ffffff;--accent:#2563eb;--muted:#6b7280}
+    *{box-sizing:border-box}
+    body{font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:var(--bg);color:#0f1724}
+    .app{max-width:1100px;margin:28px auto;padding:18px}
+    header{display:flex;align-items:center;justify-content:space-between}
+    h1{margin:0;font-size:18px}
+    .layout{display:grid;grid-template-columns:260px 1fr 320px;gap:14px;margin-top:14px}
+    .panel{background:var(--panel);border-radius:10px;padding:12px;box-shadow:0 4px 18px rgba(15,23,36,0.06)}
+
+    /* toolbar */
+    .toolbar h3{margin:0 0 8px 0;font-size:14px}
+    .tool-btn{display:flex;gap:8px;align-items:center;padding:8px;border-radius:8px;border:1px solid rgba(15,23,36,0.06);cursor:pointer;margin-bottom:8px}
+    .tool-btn input{width:70px}
+    .tool-btn small{color:var(--muted);font-size:12px}
+
+    /* canvas */
+    .canvas-wrap{position:relative;height:640px;border-radius:10px;overflow:hidden}
+    #canvas{width:100%;height:100%;background:linear-gradient(180deg,#eaf2ff,#f6f8fb);display:block}
+    .inspector h3{margin-top:0}
+    .controls{display:flex;gap:8px;margin-top:8px}
+    button{background:var(--accent);color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer}
+    .btn-ghost{background:transparent;border:1px solid rgba(15,23,36,0.06);color:var(--muted)}
+    .muted{color:var(--muted);font-size:13px}
+
+    /* component styling for export (in-canvas icons) */
+    .comp-label{font-size:12px;font-weight:600}
+    .terminal{fill:#111827}
+
+    .log{font-family:monospace;background:#0b1220;color:#e6eef6;padding:10px;border-radius:8px;min-height:120px}
+
+    @media (max-width:1000px){.layout{grid-template-columns:1fr;}}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div>
+        <h1>Virtual Lab Simulator — Demo</h1>
+        <div class="muted">Place basic components, connect terminals, and run a simple DC simulation.</div>
+      </div>
+      <div class="muted">Note: This is a teaching demo (no backend).</div>
+    </header>
+
+    <section class="layout">
+      <aside class="panel toolbar">
+        <h3>Components</h3>
+        <div id="addBattery" class="tool-btn">🔋 <div style="flex:1">Battery</div> <input id="batV" type="number" step="0.1" value="9"> V</div>
+        <div id="addResistor" class="tool-btn">🧱 <div style="flex:1">Resistor</div> <input id="resR" type="number" step="1" value="100"> Ω</div>
+        <div id="addLed" class="tool-btn">💡 <div style="flex:1">LED</div> <input id="ledVf" type="number" step="0.1" value="2"> Vf</div>
+
+        <h3 style="margin-top:12px">Actions</h3>
+        <div class="tool-btn" id="connectMode">🔗 <div style="flex:1">Connect terminals</div></div>
+        <div class="tool-btn" id="deleteMode">🗑️ <div style="flex:1">Delete</div></div>
+        <div class="controls" style="margin-top:8px">
+          <button id="simRun">Run</button>
+          <button id="reset" class="btn-ghost">Reset</button>
+        </div>
+
+        <h3 style="margin-top:12px">Tips</h3>
+        <div class="muted">• Click component terminals to create wires (click terminal A, then terminal B).<br>• Place at least one battery and a closed path of components to compute current.<br>• Wires have no resistance in this demo; resistors and LEDs affect results.</div>
+      </aside>
+
+      <section class="panel canvas-wrap">
+        <svg id="canvas"></svg>
+      </section>
+
+      <aside class="panel inspector">
+        <h3>Simulation Output</h3>
+        <div id="status" class="muted">Idle</div>
+        <div style="margin-top:10px">
+          <label class="muted">Log</label>
+          <div id="log" class="log">Ready.
+</div>
+        </div>
+
+        <h3 style="margin-top:12px">Selected</h3>
+        <div id="selectedInfo" class="muted">None</div>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    // Simple in-browser virtual lab demo.
+    // Data structures
+    const svg = document.getElementById('canvas');
+    const NS = 'http://www.w3.org/2000/svg';
+    svg.setAttribute('viewBox', '0 0 1200 800');
+
+    let components = []; // {id,type,x,y,value}
+    let wires = []; // {id,t1:{compId,term}, t2:{compId,term}}
+    let selected = null;
+    let mode = 'place'; // 'place','connect','delete'
+    let connectStart = null;
+
+    let nextId = 1;
+    function uid(prefix){return `${prefix}_${nextId++}`}
+
+    // Helpers to draw
+    function clearSvg(){ while(svg.firstChild) svg.removeChild(svg.firstChild); }
+
+    function draw(){
+      clearSvg();
+      // draw grid
+      const grid = document.createElementNS(NS,'rect');
+      grid.setAttribute('x',0);grid.setAttribute('y',0);grid.setAttribute('width',1200);grid.setAttribute('height',800);grid.setAttribute('fill','transparent');
+      svg.appendChild(grid);
+
+      // wires first
+      wires.forEach(w=>{
+        const p1 = terminalPos(w.t1.compId, w.t1.term);
+        const p2 = terminalPos(w.t2.compId, w.t2.term);
+        const line = document.createElementNS(NS,'line');
+        line.setAttribute('x1',p1.x);line.setAttribute('y1',p1.y);line.setAttribute('x2',p2.x);line.setAttribute('y2',p2.y);
+        line.setAttribute('stroke','#111827');line.setAttribute('stroke-width',3);line.setAttribute('stroke-linecap','round');
+        svg.appendChild(line);
+      });
+
+      // components
+      components.forEach(c=>{
+        if(c.type==='battery') drawBattery(c);
+        else if(c.type==='resistor') drawResistor(c);
+        else if(c.type==='led') drawLed(c);
+      });
+    }
+
+    function terminalPos(compId, term){
+      const c = components.find(x=>x.id===compId);
+      if(!c) return {x:0,y:0};
+      if(c.type==='battery' || c.type==='resistor' || c.type==='led'){
+        // terminal a left, b right
+        return {x:c.x + (term==='a'? -40:40), y:c.y};
+      }
+      return {x:c.x,y:c.y};
+    }
+
+    function drawBattery(c){
+      const g = document.createElementNS(NS,'g');
+      g.setAttribute('transform', `translate(${c.x},${c.y})`);
+
+      const big = document.createElementNS(NS,'rect');
+      big.setAttribute('x',-20);big.setAttribute('y',-30);big.setAttribute('width',40);big.setAttribute('height',60);
+      big.setAttribute('rx',6);big.setAttribute('fill','#fff');big.setAttribute('stroke','#0f1724');big.setAttribute('stroke-width',2);
+      g.appendChild(big);
+
+      const plus = document.createElementNS(NS,'rect'); plus.setAttribute('x',8);plus.setAttribute('y',-14);plus.setAttribute('width',8);plus.setAttribute('height',28);g.appendChild(plus);
+      const minus = document.createElementNS(NS,'rect'); minus.setAttribute('x',-16);minus.setAttribute('y',-6);minus.setAttribute('width',12);minus.setAttribute('height',4);g.appendChild(minus);
+
+      const label = document.createElementNS(NS,'text'); label.setAttribute('x',0);label.setAttribute('y',48);label.setAttribute('text-anchor','middle');label.setAttribute('font-size','12');label.textContent=`${c.value} V`;
+      g.appendChild(label);
+
+      // terminals
+      const ta = document.createElementNS(NS,'circle'); ta.setAttribute('cx',-40);ta.setAttribute('cy',0);ta.setAttribute('r',8);ta.setAttribute('class','terminal'); ta.setAttribute('fill','#111827');
+      ta.style.cursor='pointer'; ta.addEventListener('click',()=>onTerminalClick(c.id,'a'));
+      g.appendChild(ta);
+      const tb = document.createElementNS(NS,'circle'); tb.setAttribute('cx',40);tb.setAttribute('cy',0);tb.setAttribute('r',8);tb.setAttribute('fill','#111827'); tb.style.cursor='pointer'; tb.addEventListener('click',()=>onTerminalClick(c.id,'b'));
+      g.appendChild(tb);
+
+      const outer = document.createElementNS(NS,'g'); outer.appendChild(g);
+      svg.appendChild(outer);
+
+      // interaction for dragging and selecting
+      makeDraggable(g,c);
+    }
+
+    function drawResistor(c){
+      const g = document.createElementNS(NS,'g');
+      g.setAttribute('transform', `translate(${c.x},${c.y})`);
+      const body = document.createElementNS(NS,'rect'); body.setAttribute('x',-40);body.setAttribute('y',-12);body.setAttribute('width',80);body.setAttribute('height',24);body.setAttribute('rx',6);body.setAttribute('fill','#fff');body.setAttribute('stroke','#0f1724');g.appendChild(body);
+      const label = document.createElementNS(NS,'text'); label.setAttribute('x',0);label.setAttribute('y',6);label.setAttribute('text-anchor','middle');label.setAttribute('font-size','12');label.textContent=`${c.value} Ω`;
+      g.appendChild(label);
+      const ta = document.createElementNS(NS,'circle'); ta.setAttribute('cx',-40);ta.setAttribute('cy',0);ta.setAttribute('r',6);ta.setAttribute('fill','#111827');ta.style.cursor='pointer';ta.addEventListener('click',()=>onTerminalClick(c.id,'a'));
+      const tb = document.createElementNS(NS,'circle'); tb.setAttribute('cx',40);tb.setAttribute('cy',0);tb.setAttribute('r',6);tb.setAttribute('fill','#111827');tb.style.cursor='pointer';tb.addEventListener('click',()=>onTerminalClick(c.id,'b'));
+      g.appendChild(ta);g.appendChild(tb);
+      svg.appendChild(g);
+      makeDraggable(g,c);
+    }
+
+    function drawLed(c){
+      const g = document.createElementNS(NS,'g');
+      g.setAttribute('transform', `translate(${c.x},${c.y})`);
+      const bulb = document.createElementNS(NS,'ellipse'); bulb.setAttribute('cx',0);bulb.setAttribute('cy',0);bulb.setAttribute('rx',28);bulb.setAttribute('ry',18);bulb.setAttribute('fill','#fff');bulb.setAttribute('stroke','#0f1724');g.appendChild(bulb);
+      const label = document.createElementNS(NS,'text'); label.setAttribute('x',0);label.setAttribute('y',6);label.setAttribute('text-anchor','middle');label.setAttribute('font-size','12');label.textContent=`LED ${c.value}V`;
+      g.appendChild(label);
+      const ta = document.createElementNS(NS,'circle'); ta.setAttribute('cx',-40);ta.setAttribute('cy',0);ta.setAttribute('r',6);ta.setAttribute('fill','#111827');ta.style.cursor='pointer';ta.addEventListener('click',()=>onTerminalClick(c.id,'a'));
+      const tb = document.createElementNS(NS,'circle'); tb.setAttribute('cx',40);tb.setAttribute('cy',0);tb.setAttribute('r',6);tb.setAttribute('fill','#111827');tb.style.cursor='pointer';tb.addEventListener('click',()=>onTerminalClick(c.id,'b'));
+      g.appendChild(ta);g.appendChild(tb);
+      svg.appendChild(g);
+      makeDraggable(g,c);
+    }
+
+    function makeDraggable(element, comp){
+      let isDown=false, startX, startY, origX, origY;
+      element.addEventListener('mousedown', (ev)=>{ if(mode==='connect' || mode==='delete') return; isDown=true; startX=ev.clientX; startY=ev.clientY; origX=comp.x; origY=comp.y; selected=comp; updateSelectedInfo(); ev.stopPropagation();});
+      window.addEventListener('mousemove', (ev)=>{ if(!isDown) return; const dx=(ev.clientX-startX); const dy=(ev.clientY-startY); comp.x = origX + dx; comp.y = origY + dy; draw(); });
+      window.addEventListener('mouseup', ()=>{ if(isDown) isDown=false; });
+
+      element.addEventListener('dblclick', ()=>{ // edit property
+        const newVal = prompt('Enter value (battery: V, resistor: ohms, led: Vf (V))', String(comp.value));
+        if(newVal!==null){ const num = parseFloat(newVal); if(!isNaN(num)) comp.value = num; draw(); }
+      });
+
+      element.style.cursor='grab';
+    }
+
+    function onTerminalClick(compId, term){
+      if(mode==='delete'){
+        // delete component if terminal clicked
+        components = components.filter(c=>c.id!==compId);
+        // remove wires referencing it
+        wires = wires.filter(w=>w.t1.compId!==compId && w.t2.compId!==compId);
+        log('Deleted component and related wires.'); draw(); return;
+      }
+
+      if(mode!=='connect'){
+        // select component
+        selected = components.find(c=>c.id===compId);
+        updateSelectedInfo();
+        return;
+      }
+
+      if(!connectStart){ connectStart = {compId,term}; highlightTerminal(compId,term); return; }
+      // create wire between connectStart and this
+      if(connectStart.compId===compId && connectStart.term===term){ connectStart=null; draw(); return; }
+      // avoid duplicate wires
+      wires.push({id:uid('w'), t1:connectStart, t2:{compId,term}});
+      log(`Wire: ${connectStart.compId}.${connectStart.term} → ${compId}.${term}`);
+      connectStart=null; draw();
+    }
+
+    function highlightTerminal(compId,term){ draw(); const pos = terminalPos(compId,term); const circ = document.createElementNS(NS,'circle'); circ.setAttribute('cx',pos.x);circ.setAttribute('cy',pos.y);circ.setAttribute('r',14);circ.setAttribute('fill','rgba(37,99,235,0.12)'); svg.appendChild(circ); }
+
+    // UI bindings
+    document.getElementById('addBattery').addEventListener('click', ()=>{
+      const v = parseFloat(document.getElementById('batV').value) || 9;
+      const c = {id:uid('c'),type:'battery',x:200,y:120,value:v}; components.push(c); draw();
+    });
+    document.getElementById('addResistor').addEventListener('click', ()=>{
+      const r = parseFloat(document.getElementById('resR').value) || 100;
+      const c = {id:uid('c'),type:'resistor',x:380,y:120,value:r}; components.push(c); draw();
+    });
+    document.getElementById('addLed').addEventListener('click', ()=>{
+      const vf = parseFloat(document.getElementById('ledVf').value) || 2;
+      const c = {id:uid('c'),type:'led',x:560,y:120,value:vf}; components.push(c); draw();
+    });
+
+    document.getElementById('connectMode').addEventListener('click', ()=>{ mode='connect'; connectStart=null; updateModeUI(); log('Connect mode'); });
+    document.getElementById('deleteMode').addEventListener('click', ()=>{ mode='delete'; connectStart=null; updateModeUI(); log('Delete mode'); });
+    document.getElementById('simRun').addEventListener('click', runSimulation);
+    document.getElementById('reset').addEventListener('click', ()=>{ components=[]; wires=[]; selected=null; log('Reset canvas'); draw(); updateSelectedInfo(); });
+
+    function updateModeUI(){ document.getElementById('connectMode').style.borderColor = mode==='connect'?'#2563eb':'rgba(15,23,36,0.06)'; document.getElementById('deleteMode').style.borderColor = mode==='delete'?'#ef4444':'rgba(15,23,36,0.06)'; }
+    function updateSelectedInfo(){ const el = document.getElementById('selectedInfo'); if(!selected) el.textContent='None'; else el.textContent = `ID:${selected.id} Type:${selected.type} Value:${selected.value}`; }
+    function log(msg){ const l = document.getElementById('log'); l.textContent = `${new Date().toLocaleTimeString()} — ${msg}\n` + l.textContent; document.getElementById('status').textContent = msg; }
+
+    // Simulation core: union terminals connected by wires, then find path between battery+ and battery- via component edges
+    function runSimulation(){
+      // find a battery to be the source (take first)
+      const batt = components.find(c=>c.type==='battery');
+      if(!batt){ log('No battery found. Place a battery.'); return; }
+      // Build union-find of terminals connected by wires
+      const termIds = [];
+      components.forEach(c=>{ termIds.push(idOf(c.id,'a')); termIds.push(idOf(c.id,'b')); });
+      const parent = {};
+      function find(x){ parent[x] = parent[x] || x; if(parent[x]===x) return x; parent[x]=find(parent[x]); return parent[x]; }
+      function union(a,b){ const pa=find(a), pb=find(b); parent[pa]=pb; }
+
+      // initially all terminals exist
+      termIds.forEach(t=>parent[t]=t);
+      wires.forEach(w=>{ union(idOf(w.t1.compId,w.t1.term), idOf(w.t2.compId,w.t2.term)); });
+
+      // Map components to edges between node groups
+      const edges = []; // {u,v,comp}
+      components.forEach(c=>{
+        const u = find(idOf(c.id,'a'));
+        const v = find(idOf(c.id,'b'));
+        // skip zero-length self edges
+        if(u===v) return;
+        edges.push({u,v,comp:c});
+      });
+
+      const source = find(idOf(batt.id,'a')); // assume terminal a is positive
+      const sink = find(idOf(batt.id,'b'));
+
+      // find a path from source to sink through component edges
+      // build adjacency
+      const adj = {};
+      edges.forEach(e=>{ adj[e.u]=adj[e.u]||[]; adj[e.v]=adj[e.v]||[]; adj[e.u].push(e); adj[e.v].push(e); });
+
+      const path = dfsFindPath(source,sink,adj, new Set());
+      if(!path){ log('No closed path between battery terminals found. Connect components to form a circuit.'); return; }
+
+      // path is list of edges; compute totals
+      let totalR = 0;
+      let totalVf = 0;
+      path.forEach(e=>{
+        if(e.comp.type==='resistor') totalR += Number(e.comp.value);
+        else if(e.comp.type==='led') totalVf += Number(e.comp.value);
+        else if(e.comp.type==='battery') {/* ignore battery internal */}
+      });
+
+      // compute available voltage
+      const Vbat = Number(batt.value);
+      const availableV = Vbat - totalVf;
+      let I = 0;
+      if(availableV <= 0 || totalR<=0) I = availableV<=0?0:(availableV/totalR);
+      else I = availableV / totalR;
+
+      // present results
+      const mA = (I*1000).toFixed(2);
+      log(`Path found: components=${path.map(e=>e.comp.type+'('+e.comp.id+')').join(' -> ')}`);
+      log(`Total resistance: ${totalR.toFixed(2)} Ω`);
+      log(`Total LED forward drops: ${totalVf.toFixed(2)} V`);
+      log(`Battery: ${Vbat} V  → Current: ${I.toFixed(4)} A (${mA} mA)`);
+      // LED status
+      path.forEach(e=>{ if(e.comp.type==='led'){ const on = availableV>0 && (I>0.001); log(`LED ${e.comp.id} ${on? 'ON' : 'OFF'}`); } });
+    }
+
+    function idOf(compId,term){ return `${compId}_${term}`; }
+
+    function dfsFindPath(src,dst,adj,visited){
+      // returns array of edges from src to dst or null
+      if(src===dst) return [];
+      visited.add(src);
+      const neighbors = adj[src]||[];
+      for(const e of neighbors){
+        const next = (e.u===src? e.v : e.u);
+        if(visited.has(next)) continue;
+        const sub = dfsFindPath(next,dst,adj,visited);
+        if(sub!==null){ return [e].concat(sub); }
+      }
+      return null;
+    }
+
+    // initial demo components
+    components.push({id:uid('c'),type:'battery',x:180,y:200,value:9});
+    components.push({id:uid('c'),type:'resistor',x:420,y:200,value:220});
+    components.push({id:uid('c'),type:'led',x:660,y:200,value:2});
+    // connect wires between battery.a -> resistor.a, resistor.b -> led.a, led.b -> battery.b
+    // We'll add them after drawing so terminals exist
+    draw();
+
+    // Helper to create demo wires connecting the first battery/resistor/led if present
+    function addDemoWires(){
+      const b = components.find(c=>c.type==='battery');
+      const r = components.find(c=>c.type==='resistor');
+      const l = components.find(c=>c.type==='led');
+      if(b && r && l){ wires.push({id:uid('w'), t1:{compId:b.id,term:'a'}, t2:{compId:r.id,term:'a'}});
+        wires.push({id:uid('w'), t1:{compId:r.id,term:'b'}, t2:{compId:l.id,term:'a'}});
+        wires.push({id:uid('w'), t1:{compId:l.id,term:'b'}, t2:{compId:b.id,term:'b'}});
+        draw();
+      }
+    }
+    addDemoWires();
+
+    // allow clicking empty space to clear selection or to place new component quickly (not necessary)
+    svg.addEventListener('click', (ev)=>{ if(mode==='delete' || mode==='connect') return; selected=null; updateSelectedInfo(); });
+
+    // initial UI state
+    updateModeUI(); updateSelectedInfo();
+  </script>
+</body>
+</html>
+
